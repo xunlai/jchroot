@@ -283,6 +283,11 @@ static int step3(void *arg) {
       free(mntdata);
     }
   }
+  mount("proc", "/srv/vagrant/proc", "proc", MS_NODEV | MS_NOEXEC | MS_NOSUID | MS_RELATIME, NULL);
+  mount("sysfs", "/srv/vagrant/sys", "sysfs", MS_NODEV | MS_NOEXEC | MS_NOSUID | MS_RELATIME, NULL);
+  mount("devfs", "/srv/vagrant/dev", "devfs", MS_NODEV | MS_NOEXEC | MS_NOSUID | MS_RELATIME, NULL);
+  mount("devpts", "/srv/vagrant/dev/pts", "devpts", MS_NODEV | MS_NOEXEC | MS_NOSUID | MS_RELATIME, "newinstance,ptmxmode=0666,mode=620,gid=5");
+  mount("/dev/ptmx", "/srv/vagrant/dev/pts/ptmx", "", MS_BIND | MS_REC, NULL);
   return step4(config);
 }
 
@@ -311,6 +316,41 @@ static void step2_update_map(const char *map, char *map_file) {
   free(mapping);
 }
 
+static void
+       proc_setgroups_write(pid_t child_pid, char *str)
+       {
+           char setgroups_path[PATH_MAX];
+           int fd;
+
+           snprintf(setgroups_path, PATH_MAX, "/proc/%ld/setgroups",
+                   (long) child_pid);
+
+           fd = open(setgroups_path, O_RDWR);
+           if (fd == -1) {
+
+               /* We may be on a system that doesn't support
+                  /proc/PID/setgroups. In that case, the file won't exist,
+                  and the system won't impose the restrictions that Linux 3.19
+                  added. That's fine: we don't need to do anything in order
+                  to permit 'gid_map' to be updated.
+
+                  However, if the error from open() was something other than
+                  the ENOENT error that is expected for that case,  let the
+                  user know. */
+
+               if (errno != ENOENT)
+                   fprintf(stderr, "ERROR: open %s: %s\n", setgroups_path,
+                       strerror(errno));
+               return;
+           }
+
+           if (write(fd, str, strlen(str)) == -1)
+               fprintf(stderr, "ERROR: write %s: %s\n", setgroups_path,
+                   strerror(errno));
+
+           close(fd);
+       }
+
 /* Step 2: setup user mappings */
 static void step2(struct config *config, pid_t pid) {
   char map_path[PATH_MAX];
@@ -319,6 +359,7 @@ static void step2(struct config *config, pid_t pid) {
     step2_update_map(config->uid_map, map_path);
   }
   if (config->gid_map != NULL) {
+    proc_setgroups_write(pid, "deny");
     snprintf(map_path, PATH_MAX, "/proc/%ld/gid_map", (long) pid);
     step2_update_map(config->gid_map, map_path);
   }
